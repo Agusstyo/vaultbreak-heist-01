@@ -1,79 +1,140 @@
-// The screenshot scenes behind ?shot=start|play|end. Each one plays the real rules forward from a
-// fresh world for a fixed number of steps, steered by a simple autopilot (look ahead each way the
-// paddle could move, keep clear of blocks, chase the lowest coin when that is safe), so the frame
-// is what a short game really looks like and the same seed always gives the same frame.
-import { FIELD, PLAYER, STEP } from './config.js';
-import { EVENT_OVER, KIND_BLOCK } from './world.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+// The screenshot scenes behind ?shot=cover|stealth|alarm|getaway. Each one resets
+// the world and then places the thief, the guards and the cameras exactly where
+// the moment needs them, so the frame is what a real game looks like mid-heist
+// and the same scene always gives the same frame. The renderer paints the
+// staged state with the same code as live play, so these are real renders.
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
-const END_LIMIT_SECONDS = 600;
-/**
- * How far ahead, in seconds, the autopilot checks each way it could move: the play scene's pilot
- * looks well ahead and keeps all its lives; the end scene's looks only a moment ahead, so it is
- * caught out once the blocks speed up, as a hurried player is.
- */
-const HORIZON_PLAY = 0.7;
-const HORIZON_END = 0.25;
-const SAMPLE = 1 / 30;
-const DIRECTIONS = [0, -1, 1];
-/** Extra room, each side, it keeps between the paddle and a block. */
-const MARGIN = 10;
+import { SCREEN_PLAY, SCREEN_TITLE, SCREEN_WIN } from './render.js';
 
-/** Seconds until moving in `direction` (-1, 0, 1) runs the paddle into a block; Infinity when it never does. */
-function timeToHit(state, direction, horizon) {
-  const player = state.player;
-  for (let t = SAMPLE; t <= horizon; t += SAMPLE) {
-    const x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * t));
-    for (let index = 0; index < state.items.length; index += 1) {
-      const item = state.items[index];
-      if (!item.active || item.kind !== KIND_BLOCK) continue;
-      const y = item.y + item.speed * t;
-      if (y + item.height > player.y && y < player.y + player.height && item.x < x + player.width + MARGIN && item.x + item.width > x - MARGIN) return t;
-    }
-  }
-  return Infinity;
+function placeGuard(state, index, x, y, angle, mode, suspicion) {
+  const guard = state.guards[index];
+  guard.x = x;
+  guard.y = y;
+  guard.angle = angle;
+  guard.mode = mode;
+  guard.suspicion = suspicion;
+  guard.seesPlayer = mode !== 'patrol';
 }
 
-/** Of the safe ways to move, the one toward the lowest coin (or the centre); else the one that is hit last. */
-function autopilot(state, horizon) {
-  const player = state.player;
-  let coin = null;
-  for (let index = 0; index < state.items.length; index += 1) {
-    const item = state.items[index];
-    if (item.active && item.kind !== KIND_BLOCK && (coin === null || item.y > coin.y)) coin = item;
-  }
-  const target = coin === null ? FIELD.width / 2 : coin.x + coin.width / 2;
-  const centre = player.x + player.width / 2;
-  const wanted = target > centre + 8 ? 1 : target < centre - 8 ? -1 : 0;
-  let best = wanted;
-  let bestTime = timeToHit(state, wanted, horizon);
-  for (let index = 0; index < DIRECTIONS.length && bestTime !== Infinity; index += 1) {
-    const time = timeToHit(state, DIRECTIONS[index], horizon);
-    if (time > bestTime) {
-      bestTime = time;
-      best = DIRECTIONS[index];
-    }
-  }
-  return best;
+function placeCamera(state, index, angle, disabledSeconds) {
+  const camera = state.cameras[index];
+  camera.angle = angle;
+  camera.disabledTimer = disabledSeconds;
+  camera.seesPlayer = false;
+}
+
+function takeLoot(state, index) {
+  const item = state.loot[index];
+  item.taken = true;
+  state.lootValue += item.value;
+  state.score += item.value;
+  if (item.main) state.diamondTaken = true;
+}
+
+/** The cover: the whole heist in one frame — room, cones, cameras, loot, alarm. */
+function stageCover(world) {
+  const state = world.state;
+  state.elapsed = 47.3;
+  state.alarm = 34;
+  state.coins = 2;
+  state.emp = 1;
+  takeLoot(state, 3); // a gold bar already pocketed on the way in
+  state.player.x = 560;
+  state.player.y = 430;
+  state.player.angle = Math.PI / 4;
+  state.player.sneaking = true;
+  placeGuard(state, 0, 660, 300, Math.PI * 0.75, 'patrol', 18);
+  placeGuard(state, 1, 1090, 210, Math.PI, 'patrol', 0);
+  placeGuard(state, 2, 210, 300, -Math.PI / 2, 'patrol', 0);
+  placeCamera(state, 0, Math.PI / 2 + 0.5, 0);
+  placeCamera(state, 1, Math.PI - 0.4, 0);
+  placeCamera(state, 2, -Math.PI / 2, 0);
+  return { screen: SCREEN_PLAY, best: 0 };
+}
+
+/** The stealth moment: flat in the shadows while Rook's cone sweeps past. */
+function stageStealth(world) {
+  const state = world.state;
+  state.elapsed = 83.1;
+  state.alarm = 18;
+  state.coins = 3;
+  state.emp = 2;
+  takeLoot(state, 4); // the vent painting, lifted quietly
+  state.player.x = 560;
+  state.player.y = 640;
+  state.player.angle = Math.PI / 2;
+  state.player.sneaking = true;
+  placeGuard(state, 0, 660, 500, Math.PI * 0.85, 'patrol', 62);
+  placeGuard(state, 1, 1000, 150, 0, 'patrol', 0);
+  placeGuard(state, 2, 150, 180, Math.PI / 2, 'patrol', 0);
+  placeCamera(state, 0, Math.PI / 2 - 0.6, 0);
+  placeCamera(state, 1, Math.PI + 0.3, 0);
+  placeCamera(state, 2, -Math.PI / 2 + 0.5, 0);
+  return { screen: SCREEN_PLAY, best: 0 };
+}
+
+/** The alarm: the diamond is taken, the meter is full, the crew is hunting. */
+function stageAlarm(world) {
+  const state = world.state;
+  state.elapsed = 131.7;
+  state.alarm = 100;
+  state.alarmActive = true;
+  state.alarmTimer = 4.2;
+  state.coins = 1;
+  state.emp = 0;
+  takeLoot(state, 0); // the Sunburst Diamond
+  takeLoot(state, 1);
+  takeLoot(state, 2);
+  state.player.x = 330;
+  state.player.y = 340;
+  state.player.angle = Math.PI;
+  state.player.sneaking = false;
+  placeGuard(state, 0, 470, 360, Math.PI, 'chase', 100);
+  placeGuard(state, 1, 900, 300, Math.PI, 'chase', 100);
+  placeGuard(state, 2, 300, 480, -Math.PI / 2, 'chase', 100);
+  state.guards[0].seesPlayer = true;
+  state.guards[1].seesPlayer = true;
+  placeCamera(state, 0, Math.PI / 2 + 0.3, 0);
+  placeCamera(state, 1, Math.PI, 6.5); // EMP'd moments ago — still offline
+  placeCamera(state, 2, -Math.PI / 2, 0);
+  return { screen: SCREEN_PLAY, best: 0 };
+}
+
+/** The getaway: the van pulls away, the take is counted. */
+function stageGetaway(world) {
+  const state = world.state;
+  state.elapsed = 154;
+  state.alarm = 55;
+  state.coins = 1;
+  state.emp = 1;
+  takeLoot(state, 0);
+  takeLoot(state, 1);
+  takeLoot(state, 3);
+  takeLoot(state, 4);
+  state.timeBonus = 1168;
+  state.score += state.timeBonus;
+  state.won = true;
+  state.player.x = 79;
+  state.player.y = 658;
+  state.player.angle = -Math.PI / 2;
+  placeGuard(state, 0, 640, 200, 0, 'patrol', 0);
+  placeGuard(state, 1, 1100, 250, Math.PI, 'patrol', 0);
+  placeGuard(state, 2, 250, 300, Math.PI / 2, 'patrol', 0);
+  placeCamera(state, 0, Math.PI / 2, 0);
+  placeCamera(state, 1, Math.PI, 0);
+  placeCamera(state, 2, -Math.PI / 2, 0);
+  return { screen: SCREEN_WIN, best: 7468 };
 }
 
 /**
- * Set `world` to the named scene (start, play or end; any other name is start) and return the
- * screen to draw over it and the best score to show.
+ * Set `world` to the named scene (cover, stealth, alarm, getaway; anything
+ * else is the title screen) and return the screen to draw and the best score.
  */
 export function stageShot(name, world) {
   world.reset();
-  if (name !== 'play' && name !== 'end') {
-    for (let index = 0; index < START_SECONDS / STEP; index += 1) world.step(STEP, 0, true);
-    return { screen: SCREEN_TITLE, best: 0 };
-  }
-  const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
-  const horizon = name === 'end' ? HORIZON_END : HORIZON_PLAY;
-  for (let index = 0; index < limit / STEP; index += 1) {
-    if (world.step(STEP, autopilot(world.state, horizon), false) & EVENT_OVER) break;
-  }
-  const over = world.state.lives === 0;
-  return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
+  if (name === 'stealth') return stageStealth(world);
+  if (name === 'alarm') return stageAlarm(world);
+  if (name === 'getaway') return stageGetaway(world);
+  if (name === 'title') return { screen: SCREEN_TITLE, best: 7468 };
+  return stageCover(world);
 }
